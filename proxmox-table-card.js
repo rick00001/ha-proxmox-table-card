@@ -4,6 +4,7 @@
  *
  * Vindt automatisch alle VM's (qemu_*) en containers (lxc_*) en toont ze
  * als tabel (desktop) of compacte blokken (telefoon), met start/stop-knoppen.
+ * Ondersteunt ook entiteiten met een prefix, bv. sensor.pve_lxc_naam_105_status.
  *
  * Installatie:
  *   1. Kopieer dit bestand naar /config/www/proxmox-table-card.js
@@ -22,7 +23,7 @@
  *   style: table            # table | bubble  (afgeronde bubble-look)
  */
 
-const CARD_VERSION = "1.1.0";
+const CARD_VERSION = "1.2.0";
 
 const STATUS = {
   running: ["Actief", "ok"],
@@ -132,7 +133,8 @@ class ProxmoxTableCard extends HTMLElement {
 
   _discover() {
     const hass = this._hass;
-    const re = /^sensor\.((lxc|qemu)_.+?_(\d+))_status$/;
+    // Optionele prefix (bv. "pve_") vóór lxc_/qemu_ wordt in de entity-prefix meegenomen
+    const re = /^sensor\.((?:.+?_)?(lxc|qemu)_.+?_(\d+))_status$/;
     const out = [];
     for (const id of Object.keys(hass.states)) {
       const m = id.match(re);
@@ -585,6 +587,9 @@ ha-card { container-type: inline-size; padding: 12px; overflow: hidden; }
  *          show_shutdown: true  (extra knop om de node zelf uit te zetten)
  *          show_summary: false  (cluster-samenvatting verbergen)
  *          update_entities: { pve: update.node_pve_updates_packages }  (optioneel)
+ *
+ *  De samenvatting toont de clustertotalen, tenzij include/exclude is
+ *  ingesteld: dan wordt alleen over de getoonde nodes gerekend.
  * ================================================================= */
 class ProxmoxNodeCard extends ProxmoxTableCard {
   static getStubConfig() {
@@ -679,8 +684,13 @@ class ProxmoxNodeCard extends ProxmoxTableCard {
   }
 
   _summary() {
+    const cfg = this._config;
+    if (cfg.show_summary === false) return "";
+    const filtered = (cfg.include && cfg.include.length) || (cfg.exclude && cfg.exclude.length);
+    if (filtered) return this._summaryFiltered();
+
     const c = this._cluster;
-    if (!c || this._config.show_summary === false) return "";
+    if (!c) return "";
     const s = this._hass.states;
     const frac = (id, totalAttr, icon, label) => {
       const st = s[id];
@@ -709,6 +719,61 @@ class ProxmoxNodeCard extends ProxmoxTableCard {
         ${frac(c.vm, "qemu_total", "mdi:monitor", "VM actief")}
         ${pct(c.cpu, "mdi:cpu-64-bit", "CPU", 60, 85)}
         ${pct(c.mem, "mdi:memory", "RAM", 70, 90)}
+      </div>`;
+  }
+
+  // Samenvatting alleen over de getoonde nodes (include/exclude)
+  _summaryFiltered() {
+    const s = this._hass.states;
+    const list = this._guests || [];
+    if (!list.length) return "";
+    const on = list.filter((g) => this._isOn(g));
+    const single = list.length === 1 ? list[0] : null;
+    const more = (id) => (id ? ` data-more="${esc(id)}"` : "");
+
+    const total = (key, attr) => {
+      let v = 0, t = 0, hv = false, ht = false;
+      for (const g of on) {
+        const n = num(s[g[key]]);
+        if (!Number.isNaN(n)) { v += n; hv = true; }
+      }
+      for (const g of list) {
+        const st = s[g[key]];
+        const n = st ? parseFloat(st.attributes[attr]) : NaN;
+        if (Number.isFinite(n)) { t += n; ht = true; }
+      }
+      return { v: hv ? v : NaN, t: ht ? t : NaN };
+    };
+    const avg = (key) => {
+      const a = on.map((g) => num(s[g[key]])).filter(Number.isFinite);
+      return a.length ? a.reduce((x, y) => x + y, 0) / a.length : NaN;
+    };
+    const frac = (id, icon, label, v, t, warn) => {
+      const val = Number.isNaN(v) ? "–" : Math.round(v);
+      const of = Number.isFinite(t) ? `<small>/${Math.round(t)}</small>` : "";
+      return `<div class="sum"${more(id)}>
+          <div class="sl"><ha-icon icon="${icon}"></ha-icon>${label}</div>
+          <div class="sv${warn ? " warnv" : ""}">${val}${of}</div>
+        </div>`;
+    };
+    const pct = (key, icon, label, warn, alert) => {
+      const v = avg(key);
+      const cls = v > alert ? "err" : v > warn ? "warn" : "ok";
+      return `<div class="sum"${more(single && single[key])}>
+          <div class="sl"><ha-icon icon="${icon}"></ha-icon>${label}</div>
+          <div class="sv">${Number.isNaN(v) ? "–" : `${Math.round(v)}<small>%</small>`}</div>
+          ${Number.isNaN(v) ? "" : `<div class="bar"><div class="${cls}" style="width:${Math.min(Math.max(v, 0), 100)}%"></div></div>`}
+        </div>`;
+    };
+
+    const ct = total("ct", "lxc_total");
+    const vm = total("vm", "qemu_total");
+    return `<div class="summary">
+        ${frac(single && single.status, "mdi:server-network", "Nodes", on.length, list.length, on.length < list.length)}
+        ${frac(single && single.ct, "mdi:package-variant-closed", "LXC actief", ct.v, ct.t)}
+        ${frac(single && single.vm, "mdi:monitor", "VM actief", vm.v, vm.t)}
+        ${pct("cpu", "mdi:cpu-64-bit", "CPU", 60, 85)}
+        ${pct("mem", "mdi:memory", "RAM", 70, 90)}
       </div>`;
   }
 

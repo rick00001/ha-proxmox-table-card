@@ -24,6 +24,8 @@ All three cards **discover their entities automatically** — no entity lists to
 
 > The Proxmox VE integration disables some entities by default (for example disk usage, IP address, last boot, node buttons). Enable the ones you want to see under **Settings → Devices & services → Proxmox VE → Entities**. Missing entities simply show `–` or hide their button.
 
+> **Entity prefix:** newer versions of the Proxmox VE integration prefix entity IDs with `pve_` (for example `sensor.pve_lxc_bookstack_105_status`). Both the prefixed and the unprefixed naming are supported automatically.
+
 ---
 
 ## Installation
@@ -61,7 +63,7 @@ type: custom:proxmox-table-card
 | `sort` | string | `name` | `name`, `id` (VMID), `node`, or `status` (running guests first). |
 | `hide_stopped` | boolean | `false` | Only show running guests. |
 | `show_ip` | boolean | `false` | Show the IP address in the second line (wide layout only). |
-| `include` | list | `[]` | Only show these guests. Matches a part of the name, the exact VMID, or the entity prefix. |
+| `include` | list | `[]` | Only show these guests. Matches a part of the name, the exact VMID, or the entity prefix (including `pve_` if present, e.g. `pve_lxc_bookstack_105`). |
 | `exclude` | list | `[]` | Hide these guests (same matching as `include`). |
 | `confirm` | boolean | `true` | Ask for a second tap before shutdown, reboot and stop. |
 | `style` | string | `table` | `table` or `bubble`. |
@@ -93,7 +95,7 @@ With `confirm: true` the first tap turns the button into a labelled confirm butt
 
 ### Discovered entities
 
-Guests are found from `sensor.<type>_<name>_<vmid>_status` where `<type>` is `lxc` or `qemu`. For each guest the card then uses (if present):
+Guests are found from `sensor.[<prefix>_]<type>_<name>_<vmid>_status` where `<type>` is `lxc` or `qemu` and the optional leading prefix is, for example, `pve`. For each guest the card then uses (if present), where `<prefix>` below is everything between `sensor.` and `_status` (so it includes `pve_` when present):
 
 | Entity | Used for |
 | --- | --- |
@@ -124,10 +126,10 @@ type: custom:proxmox-node-card
 | `title` | string / `false` | `Proxmox nodes` | Card title. `false` hides it. |
 | `sort` | string | `name` | `name` or `status` (online nodes first). |
 | `hide_stopped` | boolean | `false` | Hide offline nodes. |
-| `include` / `exclude` | list | `[]` | Filter nodes by (part of) name or entity prefix. |
+| `include` / `exclude` | list | `[]` | Filter nodes by (part of) name or entity prefix. The summary tiles follow this filter (see below). |
 | `confirm` | boolean | `true` | Confirm reboot / start all / stop all / shutdown. |
 | `show_shutdown` | boolean | `false` | Add a button to shut down the node itself. |
-| `show_summary` | boolean | `true` | Show the cluster summary tiles (only when a cluster is detected). |
+| `show_summary` | boolean | `true` | Show the summary tiles (needs a detected cluster, or an `include` / `exclude` filter). |
 | `update_entities` | map | – | Override which `update.*` entity opens when you tap the update count (see below). |
 | `style` | string | `table` | `table` or `bubble`. |
 
@@ -140,13 +142,40 @@ show_shutdown: true
 style: bubble
 ```
 
+Only show two of your nodes, with a summary for just those:
+
+```yaml
+type: custom:proxmox-node-card
+include:
+  - pve
+  - pve2
+```
+
 ### What it shows
 
 - **Status, uptime, CPU, RAM, disk** per node
 - **Running LXC / VM count** — tap to open the sensor
 - **Pending updates** — shows the number from `sensor.<node>_total_updates`; tapping it opens the node's **update entity** (with the package list), not the count sensor
 - **Buttons**: start all, reboot, stop all (and shutdown with `show_shutdown`) when online; Wake-on-LAN when offline
-- **Cluster summary** (when `sensor.<cluster>_nodes_online` exists): nodes online, LXC running, VMs running, cluster CPU and RAM
+- **Summary tiles**: nodes online, LXC running, VMs running, CPU and RAM (see below)
+
+### Summary and filtering
+
+Without `include` / `exclude`, the summary shows the **cluster totals** from the cluster entities (`sensor.<cluster>_nodes_online` etc.).
+
+As soon as `include` or `exclude` is set, the summary is calculated from **only the nodes shown on the card**:
+
+| Tile | With a filter |
+| --- | --- |
+| Nodes | Online nodes out of the shown nodes |
+| LXC / VM running | Sum of the shown nodes' running counts (the `/total` appears when the node entities expose `lxc_total` / `qemu_total`) |
+| CPU / RAM | Plain **average** of the online shown nodes. Not weighted by node size, because the per-node entities don't expose totals. |
+
+Notes:
+
+- With `hide_stopped: true` the node total also shrinks, because it counts only the shown nodes.
+- When exactly one node is shown, tapping a tile opens that node's sensor. With several nodes the tiles are not tappable (there is no single entity behind the combined value).
+- Set `show_summary: false` to hide the tiles entirely.
 
 ### Update entity lookup
 
@@ -168,7 +197,7 @@ update_entities:
 
 ### Discovered entities
 
-Nodes are found from `sensor.<prefix>_containers_running`. A prefix that also has `sensor.<prefix>_nodes_online` is treated as the cluster.
+Nodes are found from `sensor.<prefix>_containers_running`. A prefix that also has `sensor.<prefix>_nodes_online` is treated as the cluster. Any entity prefix (including `pve_`) works.
 
 | Entity | Used for |
 | --- | --- |
@@ -235,7 +264,7 @@ Every part of a row opens the relevant **more-info** dialog:
 | Uptime | Last boot sensor |
 | LXC / VM count (nodes) | Running count sensor |
 | Update count (nodes) | Node update entity |
-| Summary tile | Cluster / NAS sensor |
+| Summary tile | Cluster / NAS sensor (or the node's sensor when a filter leaves one node) |
 
 Action buttons never open a dialog.
 
@@ -256,14 +285,20 @@ Layout switches to the compact phone view when the card is narrower than 680 px 
 
 ## Troubleshooting
 
-- **"Geen Proxmox VM's of containers gevonden"** — no `sensor.lxc_*_status` / `sensor.qemu_*_status` entities exist. Check the Proxmox VE integration and that status sensors are enabled.
+- **"Geen Proxmox VM's of containers gevonden"** — no `sensor.[pve_]lxc_*_status` / `sensor.[pve_]qemu_*_status` entities exist. Check the Proxmox VE integration and that status sensors are enabled.
+- **An `include` / `exclude` entry with an entity prefix stopped matching after an update** — the prefix now includes `pve_` (e.g. `pve_lxc_bookstack_105`). Use the guest name or VMID instead to be independent of the prefix.
 - **A column shows `–`** — the matching entity is disabled or missing; enable it in the integration.
 - **A button is missing** — the corresponding `button.*` entity is disabled.
+- **Node summary shows unexpected CPU / RAM** — with `include` / `exclude` set these are simple averages of the shown online nodes, not cluster values.
 - **Card not found after installing** — check the resource URL and hard-refresh (Ctrl + F5). The browser console logs `PROXMOX-TABLE-CARD vX.Y.Z` when the file is loaded.
 
 ---
 
 ## Changelog
+
+### 1.2.0
+- Support for entity IDs with a prefix such as `pve_` (e.g. `sensor.pve_lxc_bookstack_105_status`), as used by newer versions of the Proxmox VE integration.
+- Node card: the summary tiles now respect `include` / `exclude` and are calculated from the shown nodes only.
 
 ### 1.1.0
 - Node card: tapping the update count now opens the node's `update.*` entity instead of the count sensor.
